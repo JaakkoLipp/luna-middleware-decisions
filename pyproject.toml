@@ -1,0 +1,39 @@
+[project]
+name = "decisions-middleware"
+version = "0.2.0"
+description = "Jev-compatible decisions API backed by a non-reasoning GPT Luna model (OpenRouter, LiteLLM, Azure)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "uvicorn[standard]>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13",
+    "openai>=3.26",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/decisions_mw"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: calls the real OpenRouter API (needs OPENROUTER_API_KEY)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
