@@ -107,6 +107,80 @@ curl -s localhost:8000/v1/systemone -H 'Authorization: Bearer my-client-key' \
 `DMW_ALLOW_ANONYMOUS=true`. To run with Docker: `docker build -t decisions-middleware .` and then
 `docker run -p 8000:8000 -e OPENROUTER_API_KEY -e DMW_API_KEYS decisions-middleware`.
 
+## Testing locally
+
+**1. Configure.** Copy `.env.example` to `.env`, then set two values:
+- `OPENROUTER_API_KEY`: your OpenRouter key, used for the model calls.
+- `DMW_API_KEYS`: any string you choose. It's the bearer key clients must send to this service.
+
+Set each variable only once. The template already contains an empty `DMW_API_KEYS=` line, and a
+later empty line overrides an earlier value: the service then refuses to start with
+`no inbound auth`.
+
+**2. Start the server** from the project directory, since `.env` is read from the current
+directory:
+
+```bash
+uv sync
+uv run uvicorn --factory decisions_mw.main:create_app --port 8000
+curl -s localhost:8000/healthz        # {"status":"ok","model":"openai/gpt-6-luna"}
+```
+
+**3. Send a request** from a second terminal. The first line reads your key from `.env`:
+
+```bash
+KEY=$(grep '^DMW_API_KEYS=' .env | cut -d= -f2 | cut -d, -f1)
+curl -s localhost:8000/v1/systemone -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{
+  "model": "jev-latest",
+  "state": "My internet has been down since this morning and I work from home!",
+  "questions": {
+    "team":    {"type": "choice", "instructions": "Which team should handle this?",
+                "criteria": {"billing": "Payments", "technical": "Connectivity and software"}},
+    "urgency": {"type": "score", "instructions": "How urgent is this?",
+                "criteria": ["Low", "Today", "Immediately"]}
+  }
+}' | python3 -m json.tool
+```
+
+Add `-i` to see the `X-Cost-USD` and `X-Latency-Ms` response headers.
+
+**4. Run the acceptance check** (about 30 requests, under $0.01):
+
+```bash
+DMW_KEY=$KEY python3 scripts/live_check.py --url http://localhost:8000/v1/systemone \
+  --key-env DMW_KEY --health-url http://localhost:8000/healthz
+```
+
+**5. Compare with Jev.** OpenRouter also serves TypeSafe's Jev at
+`https://openrouter.ai/api/v1/systemone`, with `"model": "jev-latest"` and your OpenRouter key.
+`scripts/compare_luna_jev.sh` builds a synthetic labeled set with `eval/make_synthetic.py`,
+starts the middleware if it isn't running, and runs `eval/run_eval.py` against both:
+
+```bash
+scripts/compare_luna_jev.sh            # 150 cases, about 340 questions, about $0.01
+N=300 scripts/compare_luna_jev.sh      # bigger set
+```
+
+It prints accuracy, calibration, latency and cost per model, plus how often the two agree.
+Predictions and the full report go to `eval/out/compare/`.
+
+A run on 2026-10-09 (150 cases, from a laptop):
+
+| | Luna (this middleware) | Jev on OpenRouter |
+|---|---|---|
+| Latency p50 / p95 | 1546 / 2101 ms | 506 / 599 ms |
+| Accuracy: noul / choice / score | 98.7% / 97.3% / 75.0% | 94.0% / 97.3% / 80.3% |
+| Cost for 150 requests | $0.0097 | $0.0025 |
+
+Score accuracy varies by about ±3 points between runs of identical code, so compare the mean of
+several runs rather than single runs. `DMW_REASONING_EFFORT=low` raised score accuracy by 5–6
+points in two measurements, at about 0.35 s more latency per request.
+
+The synthetic cases come from a few dozen templates with clear-cut labels. They show that both
+models handle easy cases, and they measure speed and cost, but they can't rank accuracy. Use a
+few hundred labeled examples from real traffic for that.
+
 ## Running behind LiteLLM (e.g. Azure)
 
 In both setups below, the middleware calls your Azure deployment through LiteLLM's chat endpoint.

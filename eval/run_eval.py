@@ -95,6 +95,8 @@ async def run_case(
         return record
     data = resp.json()
     record["usage"] = data.get("usage")
+    if record["cost_usd"] is None and isinstance(data.get("usage"), dict):
+        record["cost_usd"] = data["usage"].get("cost")  # OpenRouter reports cost in the body
     record["answers"] = data.get("answers", {})
     return record
 
