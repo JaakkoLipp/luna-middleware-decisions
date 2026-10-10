@@ -125,7 +125,7 @@ def fake() -> FakeUpstream:
 @pytest.fixture
 def make_client(fake: FakeUpstream) -> Callable[..., Any]:
     @contextmanager
-    def make(**overrides: Any) -> Iterator[TestClient]:
+    def make(*, raise_server_exceptions: bool = True, **overrides: Any) -> Iterator[TestClient]:
         values: dict[str, Any] = {
             "upstream_api_key": "test-key",
             "allow_anonymous": True,
@@ -134,7 +134,8 @@ def make_client(fake: FakeUpstream) -> Callable[..., Any]:
         values.update(overrides)
         settings = Settings(_env_file=None, **values)
         http = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler))
-        with TestClient(create_app(settings, http)) as client:
+        app = create_app(settings, http)
+        with TestClient(app, raise_server_exceptions=raise_server_exceptions) as client:
             yield client
 
     return make

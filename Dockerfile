@@ -10,5 +10,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
+# Run unprivileged; the app only reads /app (and DMW_CALIBRATION_PATH, if mounted).
+RUN useradd --system --uid 10001 --no-create-home app
+USER 10001
+
 EXPOSE 8000
 CMD ["/app/.venv/bin/uvicorn", "--factory", "decisions_mw.main:create_app", "--host", "0.0.0.0", "--port", "8000"]

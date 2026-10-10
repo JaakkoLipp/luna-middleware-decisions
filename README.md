@@ -15,12 +15,13 @@ OpenAI's own Decisions API isn't available on Azure. Microsoft has announced no 
 2026-10-09).
 
 > **Status:**
-> - 152 tests pass against a mocked upstream, including the official OpenAI SDK driving
+> - 153 tests pass against a mocked upstream, including the official OpenAI SDK driving
 >   `/v1/decisions`.
 > - Both LiteLLM setups below have been run over real HTTP, with a real LiteLLM 1.104.2 and a fake
 >   Azure deployment. LiteLLM's own OpenAI Decisions client accepted the middleware's responses.
-> - It has **not yet run against the real Luna**, so latency, accuracy and calibration on real
->   traffic are unmeasured. Start with `scripts/live_check.py` and `eval/run_eval.py` (below).
+> - The real Luna has run **only through OpenRouter**, on 150 synthetic cases (see "Testing
+>   locally"). The production path, LiteLLM in front of a real Azure deployment, has **not yet
+>   run end to end**, and no calibration has been fitted. See the "Production checklist" below.
 
 ## Quickstart (OpenRouter)
 
@@ -273,13 +274,15 @@ built-in endpoints, and which one wins depends on LiteLLM's route order.
   name, and other models may not support the strict schema.
 - **Make the middleware reachable only through LiteLLM**, using network isolation.
 
-**Verified** with LiteLLM 1.104.2:
+**Tested** with LiteLLM 1.104.2 and a fake Azure deployment, not a real one:
 - Azure receives only plain OpenAI fields: `reasoning_effort: "none"`, `max_completion_tokens` and
   the strict schema.
-- Luna on Azure supports `reasoning_effort` values `none`, `low`, `medium`, `high` and `xhigh`,
-  but not `minimal`.
-- Through either option, the OpenAI SDK and Jev requests both return correct answers, with boolean
-  choice values staying booleans.
+- Through either option, the OpenAI SDK and Jev requests both return well-formed responses, with
+  boolean choice values staying booleans.
+
+**Not yet confirmed on a real Azure deployment:** that Luna there accepts `reasoning_effort` values
+`none`, `low`, `medium`, `high` and `xhigh`, but not `minimal`. The `--chat-url` probe of
+`scripts/live_check.py` checks that `none` is accepted and really turns reasoning off.
 
 ## Testing a live deployment
 
@@ -324,6 +327,23 @@ Useful options:
   `/v1/systemone` replaced by `/v1/decisions`; `--skip-decisions` skips those checks.
 - `--health-url` checks the middleware's `/healthz`, if it's reachable.
 
+## Production checklist
+
+Before serving real (internal) traffic:
+
+1. **Use an approved upstream.** The default sends every request's `state` to OpenRouter and the
+   provider it routes to. Unless that's approved for your data, set `DMW_UPSTREAM_BASE_URL` to your
+   own endpoint, e.g. LiteLLM in front of Azure.
+2. **Run `scripts/live_check.py` against that deployment**, with `--chat-url`, and fix every FAIL.
+   Latency and accuracy measured through OpenRouter don't carry over to Azure.
+3. **Cap cost per caller.** Set LiteLLM key budgets and rate limits (without LiteLLM,
+   `DMW_RATE_LIMIT_PER_MINUTE`), and lower `DMW_MAX_SAMPLES` and `DMW_MAX_QUESTIONS` to what
+   clients need. See "Shared by both endpoints" for the worst case per request.
+4. **Label a few hundred real requests**, then use them to measure accuracy per question type and
+   to fit calibration (see "Evaluation and calibration"). Until then, probabilities are the model's
+   own uncalibrated weights. The container runs as uid 10001, so a mounted calibration file must
+   be readable by that user.
+
 ## API
 
 ### `POST /v1/decisions` (OpenAI format)
@@ -362,8 +382,9 @@ The request and response bodies follow Jev's System One contract:
 ### Shared by both endpoints
 
 Limits per request: `DMW_MAX_QUESTIONS` questions (64) and `DMW_MAX_STATE_CHARS` characters of
-state (200,000). With `DMW_MAX_SAMPLES` = 8 and 8 questions per call, one request makes at most 64
-upstream calls, plus retries.
+state (200,000). With `DMW_MAX_SAMPLES` = 8 and 8 questions per call, one request makes up to 64
+upstream calls. Each can be repeated once for bad output and retried `DMW_MAX_RETRIES` (2) times on
+transient errors, so the worst case is 64 × 2 × 3 = 384 calls.
 
 `model`: `jev-latest`, or anything not listed in `DMW_ALLOWED_MODELS`, runs on `DMW_LUNA_MODEL`.
 Callers can't route to arbitrary models.
@@ -537,3 +558,6 @@ Layout: `src/decisions_mw/`
 - **Questions in one call can influence each other.** Lower `DMW_MAX_QUESTIONS_PER_CALL` to
   isolate them, at the cost of more calls.
 - **Rate limiting is per process.** Behind LiteLLM, use its key limits instead.
+- **All requests share one pool of upstream calls.** `DMW_MAX_CONCURRENCY` (16) caps a process's
+  calls in flight, so one large request (many questions × samples) can make others queue and hit
+  `DMW_REQUEST_TIMEOUT_S`. Keep `DMW_MAX_SAMPLES` and `DMW_MAX_QUESTIONS` as low as clients allow.

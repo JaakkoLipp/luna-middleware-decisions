@@ -53,22 +53,28 @@ def _elapsed_ms(request: Request) -> int:
 
 
 def _error_response(
-    request: Request, status: int, error_type: str, message: str, **extra: Any
+    request: Request,
+    status: int,
+    error_type: str,
+    message: str,
+    *,
+    exception: BaseException | None = None,
+    **extra: Any,
 ) -> JSONResponse:
     if status == 422 and request.url.path == DECISIONS_PATH:
         status = 400  # OpenAI's API (and its SDK) treat invalid requests as 400 Bad Request
-    logger.warning(
-        json.dumps(
-            {
-                "event": "decision_error",
-                "request_id": request.state.request_id,
-                "status": status,
-                "type": error_type,
-                "message": message,
-                "latency_ms": _elapsed_ms(request),
-            }
-        )
-    )
+    event = {
+        "event": "decision_error",
+        "request_id": request.state.request_id,
+        "status": status,
+        "type": error_type,
+        "message": message,
+        "latency_ms": _elapsed_ms(request),
+    }
+    if exception is not None:
+        # The class name only: an exception's message may quote request data.
+        event["exception"] = type(exception).__name__
+    logger.log(logging.ERROR if status == 500 else logging.WARNING, json.dumps(event))
     return JSONResponse(
         status_code=status, content={"error": {"type": error_type, "message": message, **extra}}
     )
@@ -167,6 +173,16 @@ def create_app(
         return _error_response(
             request, 422, "invalid_request_error", "request failed validation", details=details
         )
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        # Starlette runs this outside request_context, so the request id header is set here.
+        # It re-raises afterwards, so the server still logs the traceback.
+        response = _error_response(
+            request, 500, "api_error", "internal server error", exception=exc
+        )
+        response.headers["X-Request-Id"] = request.state.request_id
+        return response
 
     def authenticate(request: Request) -> str | None:
         """Check the caller; returns the key to forward upstream (forward-auth mode only)."""

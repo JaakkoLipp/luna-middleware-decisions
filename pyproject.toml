@@ -14,7 +14,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx2>=2.13",
     "openai>=3.26",
     "pytest>=8",
     "ruff>=0.6",

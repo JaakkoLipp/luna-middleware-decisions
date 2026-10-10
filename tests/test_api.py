@@ -285,6 +285,18 @@ def test_errors_are_logged_with_request_id(client, fake):
     assert event["request_id"] == resp.headers["X-Request-Id"]
 
 
+def test_unexpected_error_is_json_500_with_request_id(make_client, fake):
+    fake.push(RuntimeError("bug with request data"))  # not a DecisionError: escapes the service
+    with make_client(raise_server_exceptions=False) as client, captured_events() as events:
+        resp = post(client)
+    assert resp.status_code == 500
+    assert resp.json() == {"error": {"type": "api_error", "message": "internal server error"}}
+    (event,) = events
+    assert event["event"] == "decision_error" and event["status"] == 500
+    assert event["exception"] == "RuntimeError"  # the class only, never the message
+    assert event["request_id"] == resp.headers["X-Request-Id"]
+
+
 def test_one_failed_sample_does_not_fail_the_request(client, fake):
     def sample_zero_is_broken(body):
         return completion("not json") if body["seed"] % 10_000 == 0 else valid_reply(body)
